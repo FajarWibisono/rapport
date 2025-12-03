@@ -18,7 +18,7 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 
 # Konfigurasi API DeepSeek (AMAN melalui secrets)
 DEEPSEEK_API_KEY = st.secrets["deepseek"]["api_key"]
-DEEPSEEK_MODEL = "deepseek-r1-0528"  # Model terbaik untuk keseimbangan kualitas-biaya (Mei 2025)
+DEEPSEEK_MODEL = "deepseek-chat"  # Model yang pasti tersedia dan stabil
 
 # Konfigurasi halaman
 st.set_page_config(
@@ -105,6 +105,12 @@ def read_uploaded_file(uploaded_file):
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
+# Fungsi helper untuk caching berdasarkan hash content
+def get_content_hash(content):
+    if content is None:
+        return "empty"
+    return hashlib.md5(str(content).encode()).hexdigest()
+
 # Fungsi untuk memanggil DeepSeek API dengan retry mechanism
 def call_deepseek(prompt, max_tokens=1500, max_retries=2):
     """Memanggil DeepSeek API dengan retry mechanism dan parameter optimasi"""
@@ -150,201 +156,142 @@ FORMAT OUTPUT:
             }
         ],
         "temperature": 0.3,  # Lebih rendah untuk konsistensi dan profesionalisme
-        "top_p": 0.9,
-        "frequency_penalty": 0.1,
-        "presence_penalty": 0.1,
         "max_tokens": max_tokens
     }
     
     for attempt in range(max_retries):
         try:
+            # URL API yang benar tanpa spasi berlebih
             response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=data)
+            
             if response.status_code == 200:
                 result = response.json()
-                return result['choices'][0]['message']['content']
+                if 'choices' in result and len(result['choices']) > 0:
+                    return result['choices'][0]['message']['content']
+                else:
+                    return "Error: Format respons API tidak sesuai"
+            
             elif response.status_code == 429:  # Rate limit
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)  # Exponential backoff
                     continue
-                return f"Error: Rate limit exceeded. Silakan coba lagi beberapa saat."
+                return "Error: Rate limit exceeded. Silakan coba lagi beberapa menit kemudian."
+            
+            elif response.status_code == 400:
+                error_detail = response.json()
+                error_message = error_detail.get('error', {}).get('message', 'Bad Request')
+                return f"Error: {error_message}. Silakan cek konfigurasi API Anda."
+            
             else:
-                return f"Error calling DeepSeek API: {response.status_code} - {response.text}"
+                return f"Error API ({response.status_code}): {response.text}"
+                
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            return f"Error koneksi ke API: {str(e)}"
+        
         except Exception as e:
-            if attempt == max_retries - 1:
-                return f"DeepSeek API failed after {max_retries} attempts: {str(e)}"
-            time.sleep(1)
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            return f"Error tidak terduga: {str(e)}"
     
-    return "Gagal menghubungi DeepSeek API setelah beberapa percobaan."
+    return "Gagal menghubungi API setelah beberapa percobaan."
 
-# Fungsi helper untuk caching berdasarkan hash content
-def get_content_hash(content):
-    if content is None:
-        return "empty"
-    return hashlib.md5(str(content).encode()).hexdigest()
-
-# Fungsi analisis dengan caching optimasi
-@st.cache_data(ttl=3600)  # Cache selama 1 jam
-def cached_analyze_strategi_budaya(pcb_hash, selected_hsh, selected_fungsi):
-    # Fungsi ini hanya untuk caching, analisis sebenarnya dilakukan di luar
-    return None
-
+# Fungsi analisis dengan struktur yang lebih sederhana dan error-free
 def analyze_strategi_budaya(pcb_content, selected_hsh, selected_fungsi):
-    # Generate hash untuk caching
-    pcb_hash = get_content_hash(pcb_content)
-    
-    # Cek apakah hasil sudah di-cache
-    cached_result = cached_analyze_strategi_budaya(pcb_hash, selected_hsh, selected_fungsi)
-    if cached_result is not None:
-        return cached_result
-    
     prompt = f"""
-**KONTEKS:** Analisis strategi budaya kerja untuk fungsi {selected_fungsi} di HSH {selected_hsh}
+Analisis strategi budaya kerja untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
-**DATA PCB YANG DISEDIAKAN:**
+Data PCB:
 {pcb_content}
 
-**INSTRUKSI ANALISIS:**
-1. IDENTIFIKASI pola dan tren dalam strategi budaya yang diajukan
-2. ANALISIS kesesuaian dengan metode SMART dan logika bisnis
-3. BERIKAN REASONING untuk setiap poin analisis
-4. FOKUS utama pada aspek PERILAKU (bukan teknis operasional)
+Evaluasi:
+1. Apakah Goals/Business Initiatives menggunakan metode SMART?
+2. Apakah ada kerunutan logis dari identifikasi kendala ke Business Initiatives?
+3. Apakah PCB lengkap dalam menggambarkan strategi budaya?
 
-**ASPEK YANG DINILAI:**
-- Penggunaan metode SMART pada Goals/Business Initiatives
-- Kerunutan logis dari identifikasi kendala ke Business Initiatives
-- Kelengkapan PCB dalam menggambarkan strategi budaya
-- Fokus pada perubahan perilaku (mindset, kolaborasi, komunikasi, dll)
+Fokus pada aspek PERILAKU: perubahan mindset, kolaborasi, komunikasi, kepemimpinan, keterlibatan.
 
-**FORMAT OUTPUT YANG DIHARAPKAN:**
-
+Format output:
 **Apresiasi Umum:**
-[Berikan apresiasi terhadap upaya dan komitmen yang telah ditunjukkan, fokus pada aspek positif strategi budaya]
+[Apresiasi terhadap upaya dan komitmen]
 
 **Hal yang Sudah Baik:**
-- [Poin spesifik 1] - **Reasoning:** [Penjelasan mengapa ini baik dan dampaknya pada perilaku]
-- [Poin spesifik 2] - **Reasoning:** [Penjelasan mengapa ini baik dan dampaknya pada perilaku]
+- [Poin spesifik 1 dengan reasoning]
+- [Poin spesifik 2 dengan reasoning]
 
-**Peluang Pengembangan Lebih Lanjut:**
-- [Saran 1] - **Reasoning:** [Penjelasan logis dan dampak perilaku yang diharapkan]
-- [Saran 2] - **Reasoning:** [Penjelasan logis dan dampak perilaku yang diharapkan]
-
-**Rekomendasi Prioritas:**
-[Berikan 1-2 rekomendasi utama dengan reasoning yang kuat]
+**Peluang Pengembangan:**
+- [Saran 1 dengan reasoning]
+- [Saran 2 dengan reasoning]
 """
     return call_deepseek(prompt, max_tokens=1500)
-
-@st.cache_data(ttl=3600)
-def cached_analyze_program_budaya(pcb_hash, selected_hsh, selected_fungsi):
-    return None
 
 def analyze_program_budaya(pcb_content, selected_hsh, selected_fungsi):
-    pcb_hash = get_content_hash(pcb_content)
-    cached_result = cached_analyze_program_budaya(pcb_hash, selected_hsh, selected_fungsi)
-    if cached_result is not None:
-        return cached_result
-    
     prompt = f"""
-**KONTEKS:** Analisis Program Budaya untuk fungsi {selected_fungsi} di HSH {selected_hsh}
+Analisis Program Budaya untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
-**DATA PROGRAM YANG DISEDIAKAN:**
+Data Program:
 {pcb_content}
 
-**INSTRUKSI ANALISIS:**
-1. EVALUASI setiap program (One Hour Meeting, ONE Action, ONE KOLAB) secara terpisah
-2. ANALISIS dampak perilaku dari setiap program
-3. BERIKAN REASONING untuk setiap evaluasi dan saran
-4. FOKUS pada keterlibatan pekerja dan perubahan perilaku nyata
+Evaluasi program:
+1. One Hour Meeting: kualitas dialog dan partisipasi
+2. ONE Action: implementasi aksi nyata dan keterlibatan
+3. ONE KOLAB: kolaborasi lintas fungsi
 
-**ASPEK YANG DINILAI PER PROGRAM:**
-- Kesesuaian judul dengan tujuan perubahan perilaku
-- Kualitas deliverables dalam mendorong perubahan perilaku
-- Kontribusi program terhadap pencapaian Goals/Business Initiatives
-- Tingkat keterlibatan dan partisipasi pekerja
+Fokus pada dampak PERILAKU: komunikasi, kolaborasi, keterlibatan, perubahan mindset.
 
-**FORMAT OUTPUT YANG DIHARAPKAN:**
-
+Format output:
 **Apresiasi Umum:**
-[Apresiasi terhadap desain dan implementasi program budaya, soroti komitmen tim]
+[Apresiasi terhadap desain program]
 
 **Hal yang Sudah Baik:**
-- [Program spesifik 1] - **Reasoning:** [Penjelasan dampak perilaku positif yang terukur]
-- [Program spesifik 2] - **Reasoning:** [Penjelasan dampak perilaku positif yang terukur]
+- [Program spesifik 1 dengan reasoning]
+- [Program spesifik 2 dengan reasoning]
 
-**Peluang Pengembangan Lebih Lanjut:**
-- [Program 1] - **Reasoning:** [Penjelasan logis untuk optimalisasi dampak perilaku]
-- [Program 2] - **Reasoning:** [Penjelasan logis untuk optimalisasi dampak perilaku]
-
-**Rekomendasi Implementasi:**
-[Berikan 1-2 saran implementasi spesifik dengan reasoning yang kuat]
+**Peluang Pengembangan:**
+- [Saran optimalisasi 1 dengan reasoning]
+- [Saran optimalisasi 2 dengan reasoning]
 """
     return call_deepseek(prompt, max_tokens=1500)
-
-@st.cache_data(ttl=3600)
-def cached_analyze_impact(impact_hash, selected_hsh, selected_fungsi):
-    return None
 
 def analyze_impact(impact_content, selected_hsh, selected_fungsi):
     if impact_content is None:
-        return "Analisis impact tidak dapat dilakukan karena tidak ada file impact to business yang di upload"
-    
-    impact_hash = get_content_hash(impact_content)
-    cached_result = cached_analyze_impact(impact_hash, selected_hsh, selected_fungsi)
-    if cached_result is not None:
-        return cached_result
+        return "Analisis impact tidak dapat dilakukan karena tidak ada file impact to business yang diupload."
     
     prompt = f"""
-**KONTEKS:** Analisis Impact to Business untuk fungsi {selected_fungsi} di HSH {selected_hsh}
+Analisis Impact to Business untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
-**DATA IMPACT YANG DISEDIAKAN:**
+Data Impact:
 {impact_content}
 
-**INSTRUKSI ANALISIS:**
-1. IDENTIFIKASI perubahan perilaku yang terukur dari data impact
-2. ANALISIS hubungan sebab-akibat antara perubahan perilaku dan dampak bisnis
-3. BERIKAN REASONING untuk setiap temuan dan rekomendasi
-4. FOKUS pada aspek perilaku yang berdampak pada kinerja bisnis
+Evaluasi:
+1. Perubahan PERILAKU dari kondisi sebelum dan sesudah
+2. Peningkatan/efisiensi sebagai hasil perubahan perilaku
+3. Dampak terhadap kinerja bisnis
 
-**ASPEK PERILAKU YANG DINILAI:**
-- Peningkatan kolaborasi dan kerja sama tim
-- Perbaikan komunikasi dan koordinasi
-- Perubahan mindset dan budaya kerja
-- Peningkatan kepemimpinan dan ownership
-- Peningkatan keterlibatan dan motivasi pekerja
-- Penerapan nilai-nilai AKHLAK dalam praktik kerja
+Fokus pada perilaku: kolaborasi, komunikasi, mindset, kepemimpinan, keterlibatan.
 
-**FORMAT OUTPUT YANG DIHARAPKAN:**
-
+Format output:
 **Apresiasi Pencapaian:**
-[Apresiasi terhadap dampak positif yang telah dicapai, soroti perubahan perilaku yang signifikan]
+[Apresiasi terhadap dampak positif]
 
 **Hal yang Sudah Baik:**
-- [Perubahan perilaku 1] - **Reasoning:** [Penjelasan dampak bisnis yang terukur]
-- [Perubahan perilaku 2] - **Reasoning:** [Penjelasan dampak bisnis yang terukur]
+- [Perubahan perilaku 1 dengan reasoning]
+- [Perubahan perilaku 2 dengan reasoning]
 
-**Peluang Pengembangan Lebih Lanjut:**
-- [Area 1] - **Reasoning:** [Penjelasan logis untuk memperkuat dampak perilaku]
-- [Area 2] - **Reasoning:** [Penjelasan logis untuk memperkuat dampak perilaku]
-
-**Strategi Pengembangan:**
-[Berikan 1-2 strategi spesifik untuk meningkatkan dampak perilaku ke bisnis]
+**Peluang Pengembangan:**
+- [Saran peningkatan 1 dengan reasoning]
+- [Saran peningkatan 2 dengan reasoning]
 """
     return call_deepseek(prompt, max_tokens=1500)
 
-@st.cache_data(ttl=3600)
-def cached_analyze_evidence_comparison(hsh_hash, fungsi_hash):
-    return None
-
 def analyze_evidence_comparison(skor_total, skor_benchmark_evidence, selected_hsh, selected_fungsi):
     try:
-        # Generate hash untuk caching
-        cache_hash = get_content_hash(f"{selected_hsh}_{selected_fungsi}")
-        cached_result = cached_analyze_evidence_comparison(get_content_hash(selected_hsh), get_content_hash(selected_fungsi))
-        if cached_result is not None:
-            return cached_result
-        
         fungsi_data = skor_total[skor_total['Fungsi'] == selected_fungsi]
         if fungsi_data.empty:
-            return "Data fungsi tidak ditemukan dalam file SKOR_TOTAL_ALL"
+            return f"Data fungsi '{selected_fungsi}' tidak ditemukan dalam file SKOR_TOTAL_ALL."
         
         fungsi_hsh = fungsi_data.iloc[0]['HSH'] if 'HSH' in fungsi_data.columns else selected_hsh
         fungsi_hsh_normalized = normalize_hsh(fungsi_hsh)
@@ -354,54 +301,46 @@ def analyze_evidence_comparison(skor_total, skor_benchmark_evidence, selected_hs
         ]
         
         if benchmark_data.empty:
-            st.warning(f"⚠️ HSH '{fungsi_hsh}' tidak ditemukan exact match di benchmark. Mencoba fuzzy matching...")
+            # Cari dengan fuzzy matching
             match_found = False
             for idx, row in skor_benchmark_evidence.iterrows():
                 benchmark_hsh_norm = row['HSH_normalized']
                 if fungsi_hsh_normalized in benchmark_hsh_norm or benchmark_hsh_norm in fungsi_hsh_normalized:
                     benchmark_data = skor_benchmark_evidence.iloc[[idx]]
-                    st.info(f"✓ Ditemukan match: '{row.iloc[0]}' untuk HSH '{fungsi_hsh}'")
                     match_found = True
                     break
             
             if not match_found:
-                st.warning(f"⚠️ Data benchmark untuk HSH '{fungsi_hsh}' tidak ditemukan. Menggunakan benchmark 'Pertamina Group' sebagai referensi.")
+                # Gunakan benchmark default
                 benchmark_data = skor_benchmark_evidence[
-                    skor_benchmark_evidence['HSH_normalized'].str.contains('PERTAMINA GROUP', na=False)
+                    skor_benchmark_evidence['HSH_normalized'].str.contains('PERTAMINA GROUP', case=False, na=False)
                 ]
                 if benchmark_data.empty:
-                    benchmark_data = skor_benchmark_evidence.iloc[[0]]
-                    st.info(f"Menggunakan benchmark: '{benchmark_data.iloc[0, 0]}'")
+                    benchmark_data = skor_benchmark_evidence.head(1)
         
         kolom_names = ['Strategi Budaya', 'Monitoring & Evaluasi', 'Sosialisasi & Partisipasi', 
                        'Pelaporan Bulanan', 'Apresiasi Pelanggan', 'Pemahaman Program', 
                        'Reward & Consequences', 'SK AoC', 'Impact to Business']
+        
+        # Ambil nilai dengan penanganan error yang baik
+        def safe_get_value(dataframe, row_idx, col_idx):
+            try:
+                if col_idx < len(dataframe.columns):
+                    value = dataframe.iloc[row_idx, col_idx]
+                    return str(value) if pd.notna(value) else 'N/A'
+                return 'N/A'
+            except:
+                return 'N/A'
+        
         fungsi_values = {}
         for i, name in enumerate(kolom_names):
             col_idx = 3 + i
-            if col_idx < len(fungsi_data.columns):
-                fungsi_values[name] = fungsi_data.iloc[0, col_idx]
-            else:
-                fungsi_values[name] = 'N/A'
+            fungsi_values[name] = safe_get_value(fungsi_data, 0, col_idx)
         
         benchmark_values = {}
         for i, name in enumerate(kolom_names):
             col_idx = 1 + i
-            if col_idx < len(benchmark_data.columns):
-                benchmark_values[name] = benchmark_data.iloc[0, col_idx]
-            else:
-                benchmark_values[name] = 'N/A'
-        
-        differences = {}
-        for name in kolom_names:
-            if name in fungsi_values and name in benchmark_values:
-                try:
-                    fungsi_val = float(str(fungsi_values[name]).replace(',', '.'))
-                    benchmark_val = float(str(benchmark_values[name]).replace(',', '.'))
-                    diff = fungsi_val - benchmark_val
-                    differences[name] = diff
-                except (ValueError, TypeError):
-                    differences[name] = 'N/A'
+            benchmark_values[name] = safe_get_value(benchmark_data, 0, col_idx)
         
         benchmark_hsh_display = benchmark_data.iloc[0, 0] if not benchmark_data.empty else "Benchmark tidak tersedia"
         
@@ -418,88 +357,44 @@ HSH Benchmark: {benchmark_hsh_display}
             comparison_text += f"- {name}: {value}\n"
         
         comparison_text += f"""
-=== BENCHMARK ({benchmark_hsh_display}) ===
+=== BENCHMARK ===
 """
         for name, value in benchmark_values.items():
             comparison_text += f"- {name}: {value}\n"
         
-        comparison_text += f"""
-=== SELISIH (Fungsi - Benchmark) ===
-"""
-        for name, diff in differences.items():
-            if diff != 'N/A':
-                try:
-                    diff_float = float(diff)
-                    status = "✓ LEBIH BAIK" if diff_float > 0 else "⚠ PELUANG PENGEMBANGAN" if diff_float < 0 else "= SESUAI"
-                    comparison_text += f"- {name}: {diff_float:+.2f} {status}\n"
-                except:
-                    comparison_text += f"- {name}: {diff} (Data tidak valid)\n"
-            else:
-                comparison_text += f"- {name}: {diff}\n"
-        
-        comparison_text += """
-Catatan:
-- Nilai positif (+) = Fungsi LEBIH BAIK dari benchmark
-- Nilai negatif (-) = Fungsi memiliki PELUANG PENGEMBANGAN
-"""
-        
         prompt = f"""
-**KONTEKS:** Analisis perbandingan Evidence untuk fungsi {selected_fungsi} di HSH {selected_hsh}
+Analisis perbandingan Evidence untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
-**DATA PERBANDINGAN YANG DISEDIAKAN:**
+Data perbandingan:
 {comparison_text}
 
-**INSTRUKSI ANALISIS:**
-1. ANALISIS perbedaan skor pada setiap aspek dengan benchmark
-2. BERIKAN REASONING untuk setiap temuan
-3. FOKUS pada aspek perilaku dalam implementasi budaya kerja
-4. IDENTIFIKASI pola dan area prioritas pengembangan
+Evaluasi:
+- Bandingkan performa fungsi dengan benchmark
+- Fokus pada aspek perilaku dalam implementasi budaya
+- Identifikasi area kekuatan dan pengembangan
 
-**ASPEK YANG DINILAI:**
-- Strategi Budaya dan implementasinya
-- Monitoring & Evaluasi oleh AoC dan Pimpinan
-- Sosialisasi & Partisipasi dalam program budaya
-- Sistem pelaporan dan apresiasi
-- Pemahaman program dan sistem reward
-- Impact to Business dari program budaya
-
-**FORMAT OUTPUT YANG DIHARAPKAN:**
-
+Format output:
 **Apresiasi Pencapaian:**
-[Apresiasi terhadap area yang sudah di atas atau sesuai benchmark, soroti komitmen dan konsistensi]
+[Apresiasi terhadap area yang kuat]
 
 **Hal yang Sudah Baik:**
-- [Area spesifik 1] - **Reasoning:** [Penjelasan mengapa area ini unggul dan dampak perilakunya]
-- [Area spesifik 2] - **Reasoning:** [Penjelasan mengapa area ini unggul dan dampak perilakunya]
+- [Area spesifik 1 dengan reasoning]
+- [Area spesifik 2 dengan reasoning]
 
-**Peluang Pengembangan Lebih Lanjut:**
-- [Area 1] - **Reasoning:** [Penjelasan logis dan rekomendasi konkret berbasis perilaku]
-- [Area 2] - **Reasoning:** [Penjelasan logis dan rekomendasi konkret berbasis perilaku]
-
-**Prioritas Aksi:**
-[Berikan 1-2 prioritas aksi spesifik dengan reasoning yang kuat]
+**Peluang Pengembangan:**
+- [Area pengembangan 1 dengan reasoning]
+- [Area pengembangan 2 dengan reasoning]
 """
         return call_deepseek(prompt, max_tokens=1500)
+        
     except Exception as e:
-        error_msg = f"Error dalam analisis evidence: {str(e)}\n\nDetail error: {e.__class__.__name__}"
-        st.error(error_msg)
-        return error_msg
-
-@st.cache_data(ttl=3600)
-def cached_analyze_survei_comparison(hsh_hash, fungsi_hash):
-    return None
+        return f"Error dalam analisis evidence: {str(e)}"
 
 def analyze_survei_comparison(skor_survei, skor_benchmark_survei, selected_hsh, selected_fungsi):
     try:
-        # Generate hash untuk caching
-        cache_hash = get_content_hash(f"{selected_hsh}_{selected_fungsi}")
-        cached_result = cached_analyze_survei_comparison(get_content_hash(selected_hsh), get_content_hash(selected_fungsi))
-        if cached_result is not None:
-            return cached_result
-        
         fungsi_data = skor_survei[skor_survei['Fungsi'] == selected_fungsi]
         if fungsi_data.empty:
-            return "Data survei fungsi tidak ditemukan dalam file Skor_SURVEI_ALL"
+            return f"Data survei untuk fungsi '{selected_fungsi}' tidak ditemukan."
         
         fungsi_hsh = fungsi_data.iloc[0]['HSH'] if 'HSH' in fungsi_data.columns else selected_hsh
         fungsi_hsh_normalized = normalize_hsh(fungsi_hsh)
@@ -509,81 +404,42 @@ def analyze_survei_comparison(skor_survei, skor_benchmark_survei, selected_hsh, 
         ]
         
         if benchmark_data.empty:
-            st.warning(f"⚠️ HSH '{fungsi_hsh}' tidak ditemukan exact match di benchmark survei. Mencoba fuzzy matching...")
+            # Cari dengan fuzzy matching
             match_found = False
             for idx, row in skor_benchmark_survei.iterrows():
                 benchmark_hsh_norm = row['HSH_normalized']
                 if fungsi_hsh_normalized in benchmark_hsh_norm or benchmark_hsh_norm in fungsi_hsh_normalized:
                     benchmark_data = skor_benchmark_survei.iloc[[idx]]
-                    st.info(f"✓ Ditemukan match: '{row.iloc[0]}' untuk HSH '{fungsi_hsh}'")
                     match_found = True
                     break
             
             if not match_found:
-                st.warning(f"⚠️ Data benchmark survei untuk HSH '{fungsi_hsh}' tidak ditemukan. Menggunakan benchmark 'Pertamina Group' sebagai referensi.")
+                # Gunakan benchmark default
                 benchmark_data = skor_benchmark_survei[
-                    skor_benchmark_survei['HSH_normalized'].str.contains('PERTAMINA GROUP', na=False)
+                    skor_benchmark_survei['HSH_normalized'].str.contains('PERTAMINA GROUP', case=False, na=False)
                 ]
                 if benchmark_data.empty:
-                    benchmark_data = skor_benchmark_survei.iloc[[0]]
-                    st.info(f"Menggunakan benchmark: '{benchmark_data.iloc[0, 0]}'")
+                    benchmark_data = skor_benchmark_survei.head(1)
         
-        # Ambil nilai dengan penanganan error yang lebih baik
-        def safe_get_value(row, column_name, default='N/A'):
+        # Ambil nilai dengan penanganan error
+        def safe_get_value(dataframe, row_idx, col_name, default='N/A'):
             try:
-                if column_name in row:
-                    value = row[column_name]
-                    return value if pd.notna(value) else default
+                if col_name in dataframe.columns:
+                    value = dataframe.iloc[row_idx][col_name]
+                    return str(value) if pd.notna(value) else default
                 return default
             except:
                 return default
         
-        skor_survei_val = safe_get_value(fungsi_data.iloc[0], 'Skor Survei', 'N/A')
-        skor_pekerja_val = safe_get_value(fungsi_data.iloc[0], 'SKOR PEKERJA', 'N/A')
-        skor_mitra_val = safe_get_value(fungsi_data.iloc[0], 'SKOR MITRA KERJA', 'N/A')
+        # Ambil data fungsi
+        skor_survei_val = safe_get_value(fungsi_data, 0, 'Skor Survei')
+        skor_pekerja_val = safe_get_value(fungsi_data, 0, 'SKOR PEKERJA')
+        skor_mitra_val = safe_get_value(fungsi_data, 0, 'SKOR MITRA KERJA')
         
-        p_akhlak = safe_get_value(fungsi_data.iloc[0], 'P. AKHLAK', 'N/A')
-        p_one = safe_get_value(fungsi_data.iloc[0], 'P. ONE Pertamina', 'N/A')
-        p_program = safe_get_value(fungsi_data.iloc[0], 'P. Program Budaya', 'N/A')
-        p_keberlanjutan = safe_get_value(fungsi_data.iloc[0], 'P. Keberlanjutan', 'N/A')
-        p_safety = safe_get_value(fungsi_data.iloc[0], 'P. Safety', 'N/A')
-        
-        mk_akhlak = safe_get_value(fungsi_data.iloc[0], 'MK. AKHLAK', 'N/A')
-        mk_one = safe_get_value(fungsi_data.iloc[0], 'MK. ONE Pertamina', 'N/A')
-        mk_program = safe_get_value(fungsi_data.iloc[0], 'MK. Program Budaya', 'N/A')
-        mk_keberlanjutan = safe_get_value(fungsi_data.iloc[0], 'MK. Keberlanjutan', 'N/A')
-        mk_safety = safe_get_value(fungsi_data.iloc[0], 'MK. Safety', 'N/A')
-        
-        benchmark_pekerja = benchmark_data.iloc[0, 6] if len(benchmark_data.columns) > 6 else 'N/A'
-        benchmark_mitra = benchmark_data.iloc[0, 12] if len(benchmark_data.columns) > 12 else 'N/A'
-        benchmark_survei = benchmark_data.iloc[0, 13] if len(benchmark_data.columns) > 13 else 'N/A'
-        
-        b_p_akhlak = benchmark_data.iloc[0, 1] if len(benchmark_data.columns) > 1 else 'N/A'
-        b_p_one = benchmark_data.iloc[0, 2] if len(benchmark_data.columns) > 2 else 'N/A'
-        b_p_program = benchmark_data.iloc[0, 3] if len(benchmark_data.columns) > 3 else 'N/A'
-        b_p_keberlanjutan = benchmark_data.iloc[0, 4] if len(benchmark_data.columns) > 4 else 'N/A'
-        b_p_safety = benchmark_data.iloc[0, 5] if len(benchmark_data.columns) > 5 else 'N/A'
-        
-        b_mk_akhlak = benchmark_data.iloc[0, 7] if len(benchmark_data.columns) > 7 else 'N/A'
-        b_mk_one = benchmark_data.iloc[0, 8] if len(benchmark_data.columns) > 8 else 'N/A'
-        b_mk_program = benchmark_data.iloc[0, 9] if len(benchmark_data.columns) > 9 else 'N/A'
-        b_mk_keberlanjutan = benchmark_data.iloc[0, 10] if len(benchmark_data.columns) > 10 else 'N/A'
-        b_mk_safety = benchmark_data.iloc[0, 11] if len(benchmark_data.columns) > 11 else 'N/A'
-        
-        # Hitung selisih dengan penanganan error
-        def calculate_difference(val1, val2):
-            try:
-                if val1 == 'N/A' or val2 == 'N/A':
-                    return 'N/A'
-                v1 = float(str(val1).replace(',', '.'))
-                v2 = float(str(val2).replace(',', '.'))
-                return v1 - v2
-            except:
-                return 'N/A'
-        
-        diff_survei = calculate_difference(skor_survei_val, benchmark_survei)
-        diff_pekerja = calculate_difference(skor_pekerja_val, benchmark_pekerja)
-        diff_mitra = calculate_difference(skor_mitra_val, benchmark_mitra)
+        # Ambil data benchmark
+        benchmark_pekerja = safe_get_value(benchmark_data, 0, 'Skor Pekerja', 'N/A')
+        benchmark_mitra = safe_get_value(benchmark_data, 0, 'Skor Mitra', 'N/A')
+        benchmark_survei = safe_get_value(benchmark_data, 0, 'Skor Total', 'N/A')
         
         benchmark_hsh_display = benchmark_data.iloc[0, 0] if not benchmark_data.empty else "Benchmark tidak tersedia"
         
@@ -594,86 +450,48 @@ Fungsi: {selected_fungsi}
 HSH Fungsi: {fungsi_hsh}
 HSH Benchmark: {benchmark_hsh_display}
 
-=== RINGKASAN SKOR FUNGSI ===
+=== SKOR FUNGSI ===
 • Skor Survei Total: {skor_survei_val}
 • SKOR PEKERJA: {skor_pekerja_val}
-  - P. AKHLAK: {p_akhlak}
-  - P. ONE Pertamina: {p_one}
-  - P. Program Budaya: {p_program}
-  - P. Keberlanjutan: {p_keberlanjutan}
-  - P. Safety: {p_safety}
-
 • SKOR MITRA KERJA: {skor_mitra_val}
-  - MK. AKHLAK: {mk_akhlak}
-  - MK. ONE Pertamina: {mk_one}
-  - MK. Program Budaya: {mk_program}
-  - MK. Keberlanjutan: {mk_keberlanjutan}
-  - MK. Safety: {mk_safety}
 
-=== BENCHMARK ({benchmark_hsh_display}) ===
+=== SKOR BENCHMARK ===
 • Skor Survei Total: {benchmark_survei}
 • SKOR PEKERJA: {benchmark_pekerja}
-  - P. AKHLAK: {b_p_akhlak}
-  - P. ONE Pertamina: {b_p_one}
-  - P. Program Budaya: {b_p_program}
-  - P. Keberlanjutan: {b_p_keberlanjutan}
-  - P. Safety: {b_p_safety}
-
 • SKOR MITRA KERJA: {benchmark_mitra}
-  - MK. AKHLAK: {b_mk_akhlak}
-  - MK. ONE Pertamina: {b_mk_one}
-  - MK. Program Budaya: {b_mk_program}
-  - MK. Keberlanjutan: {b_mk_keberlanjutan}
-  - MK. Safety: {b_mk_safety}
 
-=== SELISIH (Fungsi - Benchmark) ===
-• Skor Survei Total: {diff_survei} {'✓' if diff_survei != 'N/A' and isinstance(diff_survei, (int, float)) and diff_survei > 0 else '⚠' if diff_survei != 'N/A' and isinstance(diff_survei, (int, float)) and diff_survei < 0 else ''}
-• SKOR PEKERJA: {diff_pekerja} {'✓' if diff_pekerja != 'N/A' and isinstance(diff_pekerja, (int, float)) and diff_pekerja > 0 else '⚠' if diff_pekerja != 'N/A' and isinstance(diff_pekerja, (int, float)) and diff_pekerja < 0 else ''}
-• SKOR MITRA KERJA: {diff_mitra} {'✓' if diff_mitra != 'N/A' and isinstance(diff_mitra, (int, float)) and diff_mitra > 0 else '⚠' if diff_mitra != 'N/A' and isinstance(diff_mitra, (int, float)) and diff_mitra < 0 else ''}
-
-Catatan:
-✓ = Fungsi LEBIH BAIK dari benchmark
-⚠ = Fungsi memiliki PELUANG PENGEMBANGAN
+Catatan: 
+✓ = Fungsi lebih baik dari benchmark
+⚠ = Fungsi memiliki peluang pengembangan
 """
         
         prompt = f"""
-**KONTEKS:** Analisis perbandingan Survei untuk fungsi {selected_fungsi} di HSH {selected_hsh}
+Analisis perbandingan Survei untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
-**DATA SURVEI YANG DISEDIAKAN:**
+Data survei:
 {comparison_text}
 
-**INSTRUKSI ANALISIS:**
-1. ANALISIS persepsi pekerja dan mitra kerja terhadap implementasi budaya
-2. IDENTIFIKASI pola dan area yang memerlukan perhatian khusus
-3. BERIKAN REASONING untuk setiap temuan dan rekomendasi
-4. FOKUS pada aspek perilaku yang mempengaruhi persepsi
+Evaluasi:
+- Bandingkan persepsi pekerja dan mitra kerja dengan benchmark
+- Fokus pada aspek perilaku: AKHLAK, ONE Pertamina, Program Budaya, Keberlanjutan, Safety
+- Identifikasi pola dan area pengembangan
 
-**ASPEK YANG DINILAI:**
-- Pemahaman dan penerapan nilai AKHLAK
-- Implementasi ONE Pertamina
-- Partisipasi dalam Program Budaya
-- Komitmen terhadap Keberlanjutan
-- Budaya Safety
-
-**FORMAT OUTPUT YANG DIHARAPKAN:**
-
+Format output:
 **Apresiasi Pencapaian:**
-[Apresiasi terhadap skor yang sudah di atas atau sesuai benchmark, soroti area kekuatan dalam persepsi]
+[Apresiasi terhadap skor yang baik]
 
 **Hal yang Sudah Baik:**
-- [Area spesifik 1] - **Reasoning:** [Penjelasan mengapa area ini mendapat persepsi positif]
-- [Area spesifik 2] - **Reasoning:** [Penjelasan mengapa area ini mendapat persepsi positif]
+- [Area spesifik 1 dengan reasoning]
+- [Area spesifik 2 dengan reasoning]
 
-**Peluang Pengembangan Lebih Lanjut:**
-- [Area 1] - **Reasoning:** [Penjelasan logis dan saran konkret untuk meningkatkan persepsi]
-- [Area 2] - **Reasoning:** [Penjelasan logis dan saran konkret untuk meningkatkan persepsi]
-
-**Strategi Perbaikan Persepsi:**
-[Berikan 1-2 strategi spesifik untuk meningkatkan persepsi pekerja dan mitra kerja]
+**Peluang Pengembangan:**
+- [Area pengembangan 1 dengan reasoning]
+- [Area pengembangan 2 dengan reasoning]
 """
         return call_deepseek(prompt, max_tokens=1500)
+        
     except Exception as e:
-        error_msg = f"Error dalam analisis survei: {str(e)}\n\nDetail error: {e.__class__.__name__}"
+        error_msg = f"Error dalam analisis survei: {str(e)}"
         st.error(error_msg)
         return error_msg
 
@@ -764,7 +582,6 @@ def main():
         2. Upload file PCB dan Impact (opsional)
         3. Klik **"🚀 Mulai Analisis"**
         4. Download hasil dalam format .docx
-      
         """)
 
     with st.spinner('Memuat data...'):
@@ -821,7 +638,7 @@ def main():
         impact_content = read_uploaded_file(uploaded_impact) if uploaded_impact else None
         
         status_text.text("🔍 Menganalisis Strategi Budaya...")
-        progress_bar.progress(25)
+        progress_bar.progress(20)
         strategi_budaya = analyze_strategi_budaya(pcb_content, selected_hsh, selected_fungsi)
         
         status_text.text("🔍 Menganalisis Program Budaya...")
@@ -829,16 +646,19 @@ def main():
         program_budaya = analyze_program_budaya(pcb_content, selected_hsh, selected_fungsi)
         
         status_text.text("🔍 Menganalisis Impact to Business...")
-        progress_bar.progress(55)
+        progress_bar.progress(60)
         impact = analyze_impact(impact_content, selected_hsh, selected_fungsi)
         
         status_text.text("🔍 Menganalisis Perbandingan Evidence...")
-        progress_bar.progress(70)
+        progress_bar.progress(80)
         evidence_comparison = analyze_evidence_comparison(skor_total, skor_benchmark_evidence, selected_hsh, selected_fungsi)
         
         status_text.text("🔍 Menganalisis Perbandingan Survei...")
-        progress_bar.progress(85)
+        progress_bar.progress(90)
         survei_comparison = analyze_survei_comparison(skor_survei, skor_benchmark_survei, selected_hsh, selected_fungsi)
+        
+        status_text.text("📝 Membuat dokumen Word...")
+        progress_bar.progress(95)
         
         analyses = {
             'strategi_budaya': strategi_budaya,
@@ -848,9 +668,11 @@ def main():
             'survei_comparison': survei_comparison
         }
         
-        status_text.text("📝 Membuat dokumen Word...")
-        progress_bar.progress(95)
-        doc_io = create_word_document(selected_fungsi, analyses)
+        try:
+            doc_io = create_word_document(selected_fungsi, analyses)
+        except Exception as e:
+            st.error(f"Error membuat dokumen: {str(e)}")
+            doc_io = None
         
         progress_bar.progress(100)
         status_text.text("✅ Analisis selesai!")
@@ -892,11 +714,21 @@ def main():
             "Perbandingan Survei"
         ])
         
-        with tab1: st.markdown("### Analisis Strategi Budaya\n" + strategi_budaya)
-        with tab2: st.markdown("### Analisis Program Budaya\n" + program_budaya)
-        with tab3: st.markdown("### Analisis Impact to Business\n" + impact)
-        with tab4: st.markdown("### Analisis Perbandingan Evidence\n" + evidence_comparison)
-        with tab5: st.markdown("### Analisis Perbandingan Survei\n" + survei_comparison)
+        with tab1: 
+            st.markdown("### Analisis Strategi Budaya")
+            st.markdown(strategi_budaya)
+        with tab2: 
+            st.markdown("### Analisis Program Budaya")
+            st.markdown(program_budaya)
+        with tab3: 
+            st.markdown("### Analisis Impact to Business")
+            st.markdown(impact)
+        with tab4: 
+            st.markdown("### Analisis Perbandingan Evidence")
+            st.markdown(evidence_comparison)
+        with tab5: 
+            st.markdown("### Analisis Perbandingan Survei")
+            st.markdown(survei_comparison)
         
         st.markdown("---")
         today = datetime.now().strftime('%m_%d')
@@ -922,28 +754,31 @@ def main():
         </style>
         """, unsafe_allow_html=True)
 
-        st.download_button(
-            label="📥 Download Hasil Analisis (.docx)",
-            data=doc_io,
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True
-        )
+        if doc_io is not None:
+            st.download_button(
+                label="📥 Download Hasil Analisis (.docx)",
+                data=doc_io,
+                file_name=filename,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
+            )
 
-        # 🟤 PESAN SUKSES - NUANSA COKLAT MUDA
-        st.markdown(f"""
-        <div style="
-            background-color: #f9f4ed;
-            padding: 12px;
-            border-radius: 8px;
-            border-left: 4px solid #5d4037;
-            margin-top: 10px;
-            color: #4e342e;
-            font-weight: bold;
-        ">
-            ✅ Dokumen siap didownload: <strong>{filename}</strong>
-        </div>
-        """, unsafe_allow_html=True)
+            # 🟤 PESAN SUKSES - NUANSA COKLAT MUDA
+            st.markdown(f"""
+            <div style="
+                background-color: #f9f4ed;
+                padding: 12px;
+                border-radius: 8px;
+                border-left: 4px solid #5d4037;
+                margin-top: 10px;
+                color: #4e342e;
+                font-weight: bold;
+            ">
+                ✅ Dokumen siap didownload: <strong>{filename}</strong>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.error("❌ Gagal membuat dokumen. Silakan coba lagi.")
     
     else:
         st.info("👈 Silakan pilih HSH, Fungsi, upload file, dan klik tombol **Mulai Analisis** di sidebar")
@@ -957,7 +792,7 @@ def main():
         - Semua analisis menggunakan **pendekatan apresiatif**
         - Fokus pada **perubahan perilaku**, bukan teknis
         - API key disimpan aman melalui **Streamlit Secrets**
-        - Hasil analisis di-cache untuk **penghematan biaya** dan kecepatan
+        - Gunakan **model deepseek-chat** yang stabil dan teruji
         """)
 
 if __name__ == "__main__":
