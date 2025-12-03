@@ -12,6 +12,8 @@ from PIL import Image
 import pytesseract
 import time
 import hashlib
+import json
+from requests.exceptions import Timeout, ConnectionError
 
 # Set path Tesseract untuk Windows
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -111,37 +113,17 @@ def get_content_hash(content):
         return "empty"
     return hashlib.md5(str(content).encode()).hexdigest()
 
-# Fungsi untuk memanggil DeepSeek API dengan retry mechanism
-def call_deepseek(prompt, max_tokens=1500, max_retries=2):
-    """Memanggil DeepSeek API dengan retry mechanism dan parameter optimasi"""
+# Fungsi untuk memanggil DeepSeek API dengan retry mechanism yang diperkuat
+def call_deepseek(prompt, max_tokens=1000, max_retries=3, timeout=60):
+    """Memanggil DeepSeek API dengan retry mechanism yang diperkuat untuk handle connection errors"""
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
     
-    # System prompt yang diperbaiki dengan fokus pada reasoning
-    system_prompt = """Anda adalah konsultan senior budaya kerja perusahaan yang berpengalaman dengan pendekatan apresiatif dan profesional. 
-
-**INSTRUKSI KHUSUS:**
-1. BERIKAN REASONING LENGKAP sebelum kesimpulan akhir
-2. Gunakan data yang disediakan secara spesifik dan terukur
-3. Setiap rekomendasi harus memiliki DASAR ANALISIS yang jelas
-4. Jelaskan LOGIKA di balik setiap poin yang Anda sampaikan
-5. FOKUS pada aspek PERILAKU (behavior): perubahan mindset, kolaborasi, komunikasi, kepemimpinan, keterlibatan, partisipasi
-
-TONE & GAYA KOMUNIKASI:
-- Gunakan bahasa yang apresiatif, menghargai usaha yang telah dilakukan
-- Profesional namun hangat dan mendukung
-- Fokus pada kekuatan (strength-based approach) sebelum memberikan saran perbaikan
-- Hindari kata-kata negatif atau menghakimi
-- Gunakan frasa seperti "telah menunjukkan komitmen yang baik", "dapat lebih dioptimalkan", "peluang untuk pengembangan lebih lanjut"
-- Berikan apresiasi spesifik terhadap pencapaian yang ada
-
-FORMAT OUTPUT:
-- Mulai dengan apresiasi umum
-- "Hal yang Sudah Baik" harus spesifik dan menghargai pencapaian
-- "Hal yang Dapat Diperbaiki" disampaikan sebagai peluang pengembangan, bukan kritik
-- Setiap poin harus memiliki REASONING yang jelas"""
+    # System prompt yang lebih ringkas untuk mengurangi ukuran request
+    system_prompt = """Anda adalah konsultan senior budaya kerja perusahaan. Berikan analisis apresiatif dengan reasoning lengkap. Fokus pada aspek PERILAKU: perubahan mindset, kolaborasi, komunikasi, kepemimpinan, keterlibatan. Gunakan bahasa profesional, hangat, dan menghargai. Setiap poin harus memiliki reasoning yang jelas."""
 
     data = {
         "model": DEEPSEEK_MODEL,
@@ -152,140 +134,170 @@ FORMAT OUTPUT:
             },
             {
                 "role": "user",
-                "content": prompt
+                "content": prompt[:8000]  # Batasi ukuran prompt untuk menghindari error
             }
         ],
-        "temperature": 0.3,  # Lebih rendah untuk konsistensi dan profesionalisme
+        "temperature": 0.3,
         "max_tokens": max_tokens
     }
     
+    # Coba format JSON untuk memastikan validitas
+    try:
+        json.dumps(data)  # Test if data is JSON serializable
+    except Exception as e:
+        return f"Error: Data tidak valid untuk API - {str(e)}"
+    
+    last_error = None
+    
     for attempt in range(max_retries):
         try:
-            # URL API yang benar tanpa spasi berlebih
-            response = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=data)
+            # Tambahkan logging untuk debugging
+            if attempt > 0:
+                st.info(f"⚠️ Percobaan ulang {attempt+1}/{max_retries} untuk koneksi API...")
+            
+            # Gunakan timeout yang lebih panjang
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=timeout
+            )
             
             if response.status_code == 200:
-                result = response.json()
-                if 'choices' in result and len(result['choices']) > 0:
-                    return result['choices'][0]['message']['content']
-                else:
-                    return "Error: Format respons API tidak sesuai"
+                try:
+                    result = response.json()
+                    if 'choices' in result and len(result['choices']) > 0:
+                        content = result['choices'][0]['message']['content']
+                        # Validasi panjang respons
+                        if len(content) < 50:  # Jika respons terlalu pendek, mungkin tidak lengkap
+                            st.warning("⚠️ Respons API terlalu pendek, mungkin tidak lengkap")
+                        return content
+                    else:
+                        return "Error: Format respons API tidak sesuai"
+                except json.JSONDecodeError:
+                    return "Error: Gagal memparse respons JSON dari API"
+                except KeyError as e:
+                    return f"Error: Struktur respons API tidak sesuai - {str(e)}"
             
             elif response.status_code == 429:  # Rate limit
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
-                    continue
-                return "Error: Rate limit exceeded. Silakan coba lagi beberapa menit kemudian."
+                wait_time = 2 ** attempt  # Exponential backoff
+                st.warning(f"⏳ Rate limit tercapai. Menunggu {wait_time} detik...")
+                time.sleep(wait_time)
+                continue
             
             elif response.status_code == 400:
-                error_detail = response.json()
-                error_message = error_detail.get('error', {}).get('message', 'Bad Request')
-                return f"Error: {error_message}. Silakan cek konfigurasi API Anda."
+                try:
+                    error_detail = response.json()
+                    error_message = error_detail.get('error', {}).get('message', 'Bad Request')
+                except:
+                    error_message = response.text[:200]  # Ambil sebagian text error
+                return f"Error API (400): {error_message}"
+            
+            elif response.status_code == 500:
+                return f"Error server internal (500). Silakan coba lagi nanti."
             
             else:
-                return f"Error API ({response.status_code}): {response.text}"
+                return f"Error API ({response.status_code}): {response.text[:200]}"
                 
-        except requests.exceptions.RequestException as e:
+        except (Timeout, ConnectionError) as e:
+            last_error = f"Koneksi timeout/terputus: {str(e)}"
             if attempt < max_retries - 1:
-                time.sleep(1)
+                wait_time = 3 ** attempt  # Exponential backoff lebih agresif
+                st.warning(f"🔌 Koneksi terputus. Menunggu {wait_time} detik sebelum percobaan ulang...")
+                time.sleep(wait_time)
                 continue
-            return f"Error koneksi ke API: {str(e)}"
+        
+        except requests.exceptions.RequestException as e:
+            last_error = f"Error koneksi: {str(e)}"
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
         
         except Exception as e:
+            last_error = f"Error tidak terduga: {str(e)}"
             if attempt < max_retries - 1:
-                time.sleep(1)
+                time.sleep(2 ** attempt)
                 continue
-            return f"Error tidak terduga: {str(e)}"
     
-    return "Gagal menghubungi API setelah beberapa percobaan."
+    # Jika semua percobaan gagal
+    return f"Gagal menghubungi API setelah {max_retries} percobaan. Error terakhir: {last_error}"
 
-# Fungsi analisis dengan struktur yang lebih sederhana dan error-free
+# Fungsi analisis dengan penanganan khusus untuk Impact
 def analyze_strategi_budaya(pcb_content, selected_hsh, selected_fungsi):
     prompt = f"""
 Analisis strategi budaya kerja untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
 Data PCB:
-{pcb_content}
+{pcb_content[:4000]}  # Batasi ukuran data
 
-Evaluasi:
-1. Apakah Goals/Business Initiatives menggunakan metode SMART?
-2. Apakah ada kerunutan logis dari identifikasi kendala ke Business Initiatives?
-3. Apakah PCB lengkap dalam menggambarkan strategi budaya?
-
-Fokus pada aspek PERILAKU: perubahan mindset, kolaborasi, komunikasi, kepemimpinan, keterlibatan.
+Fokus pada aspek PERILAKU dan berikan reasoning lengkap untuk setiap poin.
 
 Format output:
 **Apresiasi Umum:**
-[Apresiasi terhadap upaya dan komitmen]
+[1-2 kalimat apresiasi]
 
 **Hal yang Sudah Baik:**
-- [Poin spesifik 1 dengan reasoning]
-- [Poin spesifik 2 dengan reasoning]
+- [Poin 1] - **Reasoning:** [Penjelasan singkat]
+- [Poin 2] - **Reasoning:** [Penjelasan singkat]
 
 **Peluang Pengembangan:**
-- [Saran 1 dengan reasoning]
-- [Saran 2 dengan reasoning]
+- [Saran 1] - **Reasoning:** [Penjelasan singkat]
+- [Saran 2] - **Reasoning:** [Penjelasan singkat]
 """
-    return call_deepseek(prompt, max_tokens=1500)
+    return call_deepseek(prompt, max_tokens=1200, timeout=45)
 
 def analyze_program_budaya(pcb_content, selected_hsh, selected_fungsi):
     prompt = f"""
 Analisis Program Budaya untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
 Data Program:
-{pcb_content}
+{pcb_content[:4000]}  # Batasi ukuran data
 
-Evaluasi program:
-1. One Hour Meeting: kualitas dialog dan partisipasi
-2. ONE Action: implementasi aksi nyata dan keterlibatan
-3. ONE KOLAB: kolaborasi lintas fungsi
-
-Fokus pada dampak PERILAKU: komunikasi, kolaborasi, keterlibatan, perubahan mindset.
+Fokus pada dampak PERILAKU dan berikan reasoning untuk setiap evaluasi.
 
 Format output:
 **Apresiasi Umum:**
-[Apresiasi terhadap desain program]
+[1-2 kalimat apresiasi]
 
 **Hal yang Sudah Baik:**
-- [Program spesifik 1 dengan reasoning]
-- [Program spesifik 2 dengan reasoning]
+- [Program 1] - **Reasoning:** [Dampak perilaku]
+- [Program 2] - **Reasoning:** [Dampak perilaku]
 
 **Peluang Pengembangan:**
-- [Saran optimalisasi 1 dengan reasoning]
-- [Saran optimalisasi 2 dengan reasoning]
+- [Saran 1] - **Reasoning:** [Perbaikan perilaku]
+- [Saran 2] - **Reasoning:** [Perbaikan perilaku]
 """
-    return call_deepseek(prompt, max_tokens=1500)
+    return call_deepseek(prompt, max_tokens=1200, timeout=45)
 
 def analyze_impact(impact_content, selected_hsh, selected_fungsi):
     if impact_content is None:
         return "Analisis impact tidak dapat dilakukan karena tidak ada file impact to business yang diupload."
     
+    # Batasi ukuran content untuk Impact to Business (biasanya lebih besar)
+    limited_content = impact_content[:3000]  # Lebih ketat untuk impact
+    
     prompt = f"""
 Analisis Impact to Business untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
-Data Impact:
-{impact_content}
+Data Impact (ringkasan):
+{limited_content}
 
-Evaluasi:
-1. Perubahan PERILAKU dari kondisi sebelum dan sesudah
-2. Peningkatan/efisiensi sebagai hasil perubahan perilaku
-3. Dampak terhadap kinerja bisnis
-
-Fokus pada perilaku: kolaborasi, komunikasi, mindset, kepemimpinan, keterlibatan.
+Fokus pada perubahan PERILAKU dan dampak bisnis. Berikan reasoning lengkap.
 
 Format output:
 **Apresiasi Pencapaian:**
-[Apresiasi terhadap dampak positif]
+[1-2 kalimat apresiasi]
 
 **Hal yang Sudah Baik:**
-- [Perubahan perilaku 1 dengan reasoning]
-- [Perubahan perilaku 2 dengan reasoning]
+- [Perubahan 1] - **Reasoning:** [Dampak bisnis]
+- [Perubahan 2] - **Reasoning:** [Dampak bisnis]
 
 **Peluang Pengembangan:**
-- [Saran peningkatan 1 dengan reasoning]
-- [Saran peningkatan 2 dengan reasoning]
+- [Saran 1] - **Reasoning:** [Potensi peningkatan]
+- [Saran 2] - **Reasoning:** [Potensi peningkatan]
 """
-    return call_deepseek(prompt, max_tokens=1500)
+    # Gunakan timeout lebih panjang dan max_tokens lebih kecil untuk Impact
+    return call_deepseek(prompt, max_tokens=1000, timeout=90, max_retries=4)
 
 def analyze_evidence_comparison(skor_total, skor_benchmark_evidence, selected_hsh, selected_fungsi):
     try:
@@ -351,41 +363,31 @@ Fungsi: {selected_fungsi}
 HSH Fungsi: {fungsi_hsh}
 HSH Benchmark: {benchmark_hsh_display}
 
-=== DATA FUNGSI ===
+Data ringkas:
 """
-        for name, value in fungsi_values.items():
-            comparison_text += f"- {name}: {value}\n"
-        
-        comparison_text += f"""
-=== BENCHMARK ===
-"""
-        for name, value in benchmark_values.items():
-            comparison_text += f"- {name}: {value}\n"
+        for name in kolom_names[:5]:  # Hanya tampilkan 5 kolom pertama untuk mengurangi ukuran
+            comparison_text += f"- {name}: Fungsi={fungsi_values.get(name, 'N/A')}, Benchmark={benchmark_values.get(name, 'N/A')}\n"
         
         prompt = f"""
 Analisis perbandingan Evidence untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
-Data perbandingan:
 {comparison_text}
 
-Evaluasi:
-- Bandingkan performa fungsi dengan benchmark
-- Fokus pada aspek perilaku dalam implementasi budaya
-- Identifikasi area kekuatan dan pengembangan
+Fokus pada aspek perilaku. Berikan reasoning untuk setiap poin.
 
 Format output:
 **Apresiasi Pencapaian:**
-[Apresiasi terhadap area yang kuat]
+[1-2 kalimat]
 
 **Hal yang Sudah Baik:**
-- [Area spesifik 1 dengan reasoning]
-- [Area spesifik 2 dengan reasoning]
+- [Area 1] - **Reasoning:** [Penjelasan]
+- [Area 2] - **Reasoning:** [Penjelasan]
 
 **Peluang Pengembangan:**
-- [Area pengembangan 1 dengan reasoning]
-- [Area pengembangan 2 dengan reasoning]
+- [Area 1] - **Reasoning:** [Saran]
+- [Area 2] - **Reasoning:** [Saran]
 """
-        return call_deepseek(prompt, max_tokens=1500)
+        return call_deepseek(prompt, max_tokens=1000, timeout=45)
         
     except Exception as e:
         return f"Error dalam analisis evidence: {str(e)}"
@@ -421,7 +423,7 @@ def analyze_survei_comparison(skor_survei, skor_benchmark_survei, selected_hsh, 
                 if benchmark_data.empty:
                     benchmark_data = skor_benchmark_survei.head(1)
         
-        # Ambil nilai dengan penanganan error
+        # Ambil data dengan aman
         def safe_get_value(dataframe, row_idx, col_name, default='N/A'):
             try:
                 if col_name in dataframe.columns:
@@ -431,12 +433,10 @@ def analyze_survei_comparison(skor_survei, skor_benchmark_survei, selected_hsh, 
             except:
                 return default
         
-        # Ambil data fungsi
         skor_survei_val = safe_get_value(fungsi_data, 0, 'Skor Survei')
         skor_pekerja_val = safe_get_value(fungsi_data, 0, 'SKOR PEKERJA')
         skor_mitra_val = safe_get_value(fungsi_data, 0, 'SKOR MITRA KERJA')
         
-        # Ambil data benchmark
         benchmark_pekerja = safe_get_value(benchmark_data, 0, 'Skor Pekerja', 'N/A')
         benchmark_mitra = safe_get_value(benchmark_data, 0, 'Skor Mitra', 'N/A')
         benchmark_survei = safe_get_value(benchmark_data, 0, 'Skor Total', 'N/A')
@@ -444,51 +444,37 @@ def analyze_survei_comparison(skor_survei, skor_benchmark_survei, selected_hsh, 
         benchmark_hsh_display = benchmark_data.iloc[0, 0] if not benchmark_data.empty else "Benchmark tidak tersedia"
         
         comparison_text = f"""
-PERBANDINGAN SKOR SURVEI
+PERBANDINGAN SURVEI
 
 Fungsi: {selected_fungsi}
 HSH Fungsi: {fungsi_hsh}
 HSH Benchmark: {benchmark_hsh_display}
 
-=== SKOR FUNGSI ===
-• Skor Survei Total: {skor_survei_val}
-• SKOR PEKERJA: {skor_pekerja_val}
-• SKOR MITRA KERJA: {skor_mitra_val}
-
-=== SKOR BENCHMARK ===
-• Skor Survei Total: {benchmark_survei}
-• SKOR PEKERJA: {benchmark_pekerja}
-• SKOR MITRA KERJA: {benchmark_mitra}
-
-Catatan: 
-✓ = Fungsi lebih baik dari benchmark
-⚠ = Fungsi memiliki peluang pengembangan
+Ringkasan skor:
+• Fungsi - Total: {skor_survei_val}, Pekerja: {skor_pekerja_val}, Mitra: {skor_mitra_val}
+• Benchmark - Total: {benchmark_survei}, Pekerja: {benchmark_pekerja}, Mitra: {benchmark_mitra}
 """
         
         prompt = f"""
 Analisis perbandingan Survei untuk fungsi {selected_fungsi} di HSH {selected_hsh}.
 
-Data survei:
 {comparison_text}
 
-Evaluasi:
-- Bandingkan persepsi pekerja dan mitra kerja dengan benchmark
-- Fokus pada aspek perilaku: AKHLAK, ONE Pertamina, Program Budaya, Keberlanjutan, Safety
-- Identifikasi pola dan area pengembangan
+Fokus pada persepsi perilaku. Berikan reasoning untuk setiap temuan.
 
 Format output:
 **Apresiasi Pencapaian:**
-[Apresiasi terhadap skor yang baik]
+[1-2 kalimat]
 
 **Hal yang Sudah Baik:**
-- [Area spesifik 1 dengan reasoning]
-- [Area spesifik 2 dengan reasoning]
+- [Area 1] - **Reasoning:** [Penjelasan]
+- [Area 2] - **Reasoning:** [Penjelasan]
 
 **Peluang Pengembangan:**
-- [Area pengembangan 1 dengan reasoning]
-- [Area pengembangan 2 dengan reasoning]
+- [Area 1] - **Reasoning:** [Saran]
+- [Area 2] - **Reasoning:** [Saran]
 """
-        return call_deepseek(prompt, max_tokens=1500)
+        return call_deepseek(prompt, max_tokens=1000, timeout=45)
         
     except Exception as e:
         error_msg = f"Error dalam analisis survei: {str(e)}"
@@ -649,6 +635,14 @@ def main():
         progress_bar.progress(60)
         impact = analyze_impact(impact_content, selected_hsh, selected_fungsi)
         
+        # Tambahkan debugging untuk Impact analysis
+        if "Error" in impact or "error" in impact.lower():
+            st.warning(f"⚠️ Analisis Impact mengalami masalah: {impact[:100]}...")
+            st.info("💡 Sedang mencoba dengan parameter yang lebih aman...")
+            # Coba dengan parameter lebih aman
+            impact = call_deepseek(f"Analisis singkat Impact to Business untuk {selected_fungsi}. Fokus pada 2 poin utama.", 
+                                 max_tokens=500, timeout=120, max_retries=5)
+        
         status_text.text("🔍 Menganalisis Perbandingan Evidence...")
         progress_bar.progress(80)
         evidence_comparison = analyze_evidence_comparison(skor_total, skor_benchmark_evidence, selected_hsh, selected_fungsi)
@@ -672,7 +666,15 @@ def main():
             doc_io = create_word_document(selected_fungsi, analyses)
         except Exception as e:
             st.error(f"Error membuat dokumen: {str(e)}")
-            doc_io = None
+            st.error("Mencoba dengan konten default untuk Impact...")
+            # Fallback untuk Impact
+            if "Error" in analyses['impact']:
+                analyses['impact'] = "Analisis Impact to Business tidak dapat ditampilkan secara lengkap karena masalah koneksi. Silakan coba lagi nanti."
+            try:
+                doc_io = create_word_document(selected_fungsi, analyses)
+            except Exception as e2:
+                st.error(f"Masih gagal membuat dokumen: {str(e2)}")
+                doc_io = None
         
         progress_bar.progress(100)
         status_text.text("✅ Analisis selesai!")
@@ -778,7 +780,7 @@ def main():
             </div>
             """, unsafe_allow_html=True)
         else:
-            st.error("❌ Gagal membuat dokumen. Silakan coba lagi.")
+            st.error("❌ Gagal membuat dokumen akhir. Silakan screenshot hasil analisis di atas.")
     
     else:
         st.info("👈 Silakan pilih HSH, Fungsi, upload file, dan klik tombol **Mulai Analisis** di sidebar")
@@ -789,10 +791,10 @@ def main():
         st.markdown("---")
         st.markdown("### 💡 Tips Penggunaan")
         st.markdown("""
-        - Semua analisis menggunakan **pendekatan apresiatif**
-        - Fokus pada **perubahan perilaku**, bukan teknis
+        - Gunakan **file Impact to Business yang tidak terlalu besar** untuk menghindari timeout
+        - Jika error terjadi, coba **kurangi ukuran file** atau **refresh halaman**
+        - Analisis Impact membutuhkan **waktu lebih lama** karena kompleksitas datanya
         - API key disimpan aman melalui **Streamlit Secrets**
-        - Gunakan **model deepseek-chat** yang stabil dan teruji
         """)
 
 if __name__ == "__main__":
