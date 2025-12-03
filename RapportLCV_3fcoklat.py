@@ -642,10 +642,7 @@ def main():
         2. Upload file PCB dan Impact (opsional)
         3. Klik **"🚀 Mulai Analisis"**
         4. Download hasil dalam format .docx
-        
-        **Catatan:**
-        - API key disimpan aman melalui **Streamlit Secrets**
-        - Semua analisis fokus pada **aspek perilaku**
+      
         """)
 
     with st.spinner('Memuat data...'):
@@ -841,4 +838,5 @@ def main():
         """)
 
 if __name__ == "__main__":
+
     main()
