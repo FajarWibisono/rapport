@@ -1,8 +1,8 @@
-streamlit==1.39.0
-pandas==2.2.2
-requests==2.32.3
-python-docx==1.1.2
-openpyxl==3.1.5
-PyPDF2==3.0.1
-Pillow==10.4.0
-pytesseract==0.3.13
+python-docx
+pandas
+streamlit
+groq
+PyPDF2
+Pillow
+pytesseract
+openpyxl
